@@ -84,6 +84,7 @@ export function updateAnchorPoses(
       continue;
     }
     entry.mesh.visible = true;
-    entry.mesh.matrix.fromArray(pose.transform.matrix);
+    const m = pose.transform.matrix;
+    entry.mesh.position.set(m[12], m[13], m[14]);
   }
 }

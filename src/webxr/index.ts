@@ -17,7 +17,7 @@ import {
   raycastFromController,
   setupControllers,
 } from './input';
-import { createCubeMesh } from './notes';
+import { billboardYAxis, createNoteMesh } from './notes';
 import { loadAll, remove as removeStored, saveAll, upsert } from './storage';
 import type { ARHandle, StartAROpts } from './types';
 
@@ -108,7 +108,7 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
   session.addEventListener('end', () => {
     for (const entry of state.anchors) {
       scene.remove(entry.mesh);
-      disposeMesh(entry.mesh);
+      if (entry.mesh instanceof THREE.Mesh) disposeNoteMesh(entry.mesh);
     }
     state.anchors = [];
     state.reticle.visible = false;
@@ -127,6 +127,7 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
     if (frame && state.refSpace) {
       if (state.hitTestSource) updateReticleFromHitTest(state, frame);
       updateAnchorPoses(frame, state.refSpace, state.anchors);
+      billboardNotes(state);
       maybePlace(state, frame);
       maybeDelete(state, controllerHandles.controllers);
     }
@@ -155,10 +156,19 @@ async function restoreAnchors(state: RuntimeState): Promise<void> {
   for (const record of valid) {
     const anchor = restored.get(record.uuid);
     if (!anchor) continue;
-    const mesh = createCubeMesh(0x4ade80);
-    mesh.matrixAutoUpdate = false;
+    const mesh = createNoteMesh(record.text);
     state.rig.scene.add(mesh);
     state.anchors.push({ uuid: record.uuid, anchor, mesh });
+  }
+}
+
+const _cameraWorld = new THREE.Vector3();
+
+function billboardNotes(state: RuntimeState): void {
+  state.rig.camera.getWorldPosition(_cameraWorld);
+  for (const entry of state.anchors) {
+    if (!entry.mesh.visible) continue;
+    billboardYAxis(entry.mesh, _cameraWorld);
   }
 }
 
@@ -198,13 +208,17 @@ function maybePlace(state: RuntimeState, frame: XRFrame): void {
     return;
   }
 
-  const snapshot = state.lastHitMatrix.clone();
-  const lift = new THREE.Matrix4().makeTranslation(0, 0.05, 0);
-  const placementMatrix = snapshot.multiply(lift);
+  const placementMatrix = state.lastHitMatrix
+    .clone()
+    .multiply(new THREE.Matrix4().makeTranslation(0, 0.15, 0));
 
-  const mesh = createCubeMesh(0x4ade80);
-  mesh.matrixAutoUpdate = false;
-  mesh.matrix.copy(placementMatrix);
+  const noteText = state.pendingText;
+  const mesh = createNoteMesh(noteText);
+  const pos = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  const scl = new THREE.Vector3();
+  placementMatrix.decompose(pos, quat, scl);
+  mesh.position.copy(pos);
   state.rig.scene.add(mesh);
 
   if (!state.persistentSupported || !state.session || !state.refSpace) {
@@ -214,13 +228,22 @@ function maybePlace(state: RuntimeState, frame: XRFrame): void {
   createPersistentAnchor(frame, state.refSpace, placementMatrix).then((result) => {
     if (!result) {
       state.rig.scene.remove(mesh);
-      disposeMesh(mesh);
+      disposeNoteMesh(mesh);
       state.onStatus('error', 'Failed to create persistent anchor');
       return;
     }
     state.anchors.push({ uuid: result.uuid, anchor: result.anchor, mesh });
-    upsert({ uuid: result.uuid, text: state.pendingText });
+    upsert({ uuid: result.uuid, text: noteText });
   });
+}
+
+function disposeNoteMesh(mesh: THREE.Mesh): void {
+  mesh.geometry.dispose();
+  const m = mesh.material;
+  if (Array.isArray(m)) m.forEach((mat) => mat.dispose());
+  else m.dispose();
+  const ud = mesh.userData as { texture?: THREE.Texture };
+  ud.texture?.dispose();
 }
 
 function maybeDelete(state: RuntimeState, controllers: THREE.Object3D[]): void {
@@ -245,20 +268,11 @@ function maybeDelete(state: RuntimeState, controllers: THREE.Object3D[]): void {
   if (!entry) return;
 
   state.rig.scene.remove(entry.mesh);
-  disposeMesh(entry.mesh);
+  if (entry.mesh instanceof THREE.Mesh) disposeNoteMesh(entry.mesh);
   state.anchors = state.anchors.filter((e) => e !== entry);
   removeStored(entry.uuid);
   if (state.session) {
     void deletePersistentAnchor(state.session, entry.uuid);
-  }
-}
-
-function disposeMesh(obj: THREE.Object3D): void {
-  if (obj instanceof THREE.Mesh) {
-    obj.geometry.dispose();
-    const m = obj.material;
-    if (Array.isArray(m)) m.forEach((mat) => mat.dispose());
-    else m.dispose();
   }
 }
 

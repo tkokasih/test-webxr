@@ -42,6 +42,8 @@ export default function App() {
   const [supported, setSupported] = useState<boolean | null>(null);
   const [status, setStatus] = useState<ARStatus>('idle');
   const [statusDetail, setStatusDetail] = useState<string | undefined>(undefined);
+  const [draftText, setDraftText] = useState('');
+  const [activeText, setActiveText] = useState('');
 
   useEffect(() => {
     isARSupported().then((ok) => setSupported(ok));
@@ -53,10 +55,16 @@ export default function App() {
     };
   }, []);
 
+  function commitText() {
+    setActiveText(draftText);
+    handleRef.current?.setPendingText(draftText);
+  }
+
   async function onEnterAR() {
     if (!containerRef.current) return;
     try {
       const handle = await startAR(containerRef.current, {
+        initialText: activeText,
         onStatus: (s, d) => {
           setStatus(s);
           setStatusDetail(d);
@@ -78,6 +86,31 @@ export default function App() {
           passthrough.
         </p>
 
+        <label className="note-label" htmlFor="note-text">
+          Note text (used for the next placement):
+        </label>
+        <textarea
+          id="note-text"
+          className="note-textarea"
+          value={draftText}
+          onChange={(e) => setDraftText(e.target.value)}
+          rows={3}
+          placeholder="e.g. buy milk"
+        />
+        <div className="note-actions">
+          <button
+            type="button"
+            className="set-text-btn"
+            onClick={commitText}
+            disabled={draftText === activeText}
+          >
+            Set
+          </button>
+          <span className="active-text">
+            Active: <strong>{activeText || '(empty)'}</strong>
+          </span>
+        </div>
+
         {supported === null && <p className="ar-status">Checking WebXR support…</p>}
         {supported === false && (
           <p className="ar-status ar-status--error">
@@ -95,8 +128,8 @@ export default function App() {
         )}
 
         <p className="ar-hint">
-          Phase 3: trigger places a persistent cube anchored to the surface (up to 8). Hold the
-          right grip and press B while pointing at a cube to delete it. Cubes survive page reload.
+          Phase 4: trigger places a translucent note card showing the active text, anchored to the
+          surface and billboarded toward you. Grip + B deletes. Notes survive page reload.
         </p>
       </main>
       <div ref={containerRef} className="ar-canvas-container" aria-hidden="true" />
