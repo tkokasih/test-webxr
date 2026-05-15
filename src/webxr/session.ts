@@ -13,3 +13,10 @@ export async function requestImmersiveAR(): Promise<XRSession> {
     optionalFeatures: ['local-floor', 'hit-test', 'anchors', 'plane-detection'],
   });
 }
+
+export async function getViewerHitTestSource(session: XRSession): Promise<XRHitTestSource | null> {
+  if (!session.requestHitTestSource) return null;
+  const viewerSpace = await session.requestReferenceSpace('viewer');
+  const source = await session.requestHitTestSource({ space: viewerSpace });
+  return source ?? null;
+}

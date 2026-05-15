@@ -95,8 +95,8 @@ export default function App() {
         )}
 
         <p className="ar-hint">
-          Phase 1: a red wireframe cube should appear 1 m in front of you with passthrough behind
-          it.
+          Phase 2: a reticle follows your gaze across detected horizontal surfaces (floor, table).
+          Pull the trigger to place a green cube. Cubes do not yet persist across sessions.
         </p>
       </main>
       <div ref={containerRef} className="ar-canvas-container" aria-hidden="true" />
