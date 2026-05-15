@@ -18,6 +18,14 @@ import {
   setupControllers,
 } from './input';
 import { billboardYAxis, createNoteMesh } from './notes';
+import {
+  createConsolePanel,
+  createQuadrantFloor,
+  disposeGroup,
+  installConsoleCapture,
+  uninstallConsoleCapture,
+  updateHud,
+} from './debug';
 import { loadAll, remove as removeStored, saveAll, upsert } from './storage';
 import type { ARHandle, StartAROpts } from './types';
 
@@ -38,6 +46,8 @@ interface RuntimeState {
   persistentSupported: boolean;
   pendingText: string;
   onStatus: NonNullable<StartAROpts['onStatus']>;
+  debugFloor: THREE.Group | null;
+  debugHud: THREE.Mesh | null;
 }
 
 let active: RuntimeState | null = null;
@@ -63,6 +73,8 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       persistentSupported: false,
       pendingText: opts.initialText ?? '',
       onStatus,
+      debugFloor: null,
+      debugHud: null,
     };
   } else {
     active.onStatus = onStatus;
@@ -101,6 +113,18 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
 
   await restoreAnchors(state);
 
+  const debugFloor = createQuadrantFloor();
+  scene.add(debugFloor);
+  state.debugFloor = debugFloor;
+
+  const debugHud = createConsolePanel();
+  scene.add(debugHud);
+  state.debugHud = debugHud;
+  installConsoleCapture(debugHud);
+  console.log('AR session active');
+  console.log(`persistent anchors: ${state.persistentSupported ? 'supported' : 'unsupported'}`);
+  console.log(`restored anchors: ${state.anchors.length}`);
+
   const controllerHandles = setupControllers(scene, renderer, () => {
     state.pendingPlacement = true;
   });
@@ -111,6 +135,17 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       if (entry.mesh instanceof THREE.Mesh) disposeNoteMesh(entry.mesh);
     }
     state.anchors = [];
+    if (state.debugFloor) {
+      scene.remove(state.debugFloor);
+      disposeGroup(state.debugFloor);
+      state.debugFloor = null;
+    }
+    if (state.debugHud) {
+      scene.remove(state.debugHud);
+      disposeNoteMesh(state.debugHud);
+      state.debugHud = null;
+    }
+    uninstallConsoleCapture();
     state.reticle.visible = false;
     state.hasValidHit = false;
     state.pendingPlacement = false;
@@ -130,6 +165,7 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       billboardNotes(state);
       maybePlace(state, frame);
       maybeDelete(state, controllerHandles.controllers);
+      if (state.debugHud) updateHud(state.debugHud, renderer.xr.getCamera());
     }
     renderer.render(scene, camera);
   });

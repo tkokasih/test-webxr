@@ -131,6 +131,11 @@ export default function App() {
           Phase 4: trigger places a translucent note card showing the active text, anchored to the
           surface and billboarded toward you. Grip + B deletes. Notes survive page reload.
         </p>
+        <p className="ar-hint">
+          Debug aids: a quadrant-colored floor marks the local-floor origin (white sphere) with
+          axis lines (red +X, green +Y, blue +Z). A head-locked console panel in the lower-right
+          captures <code>console.log/warn/error</code>.
+        </p>
       </main>
       <div ref={containerRef} className="ar-canvas-container" aria-hidden="true" />
     </>
