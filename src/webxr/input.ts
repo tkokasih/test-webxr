@@ -56,3 +56,34 @@ export function setupControllers(
 export function isHitHorizontal(transformMatrix: Float32Array): boolean {
   return transformMatrix[5] > 0.9;
 }
+
+/**
+ * Returns the right-hand controller index and whether the grip+B combo
+ * is currently pressed. Quest 3 right gamepad: buttons[1]=grip, buttons[5]=B.
+ */
+export function pollRightGripB(session: XRSession): {
+  controllerIndex: number;
+  pressed: boolean;
+} | null {
+  const sources = session.inputSources;
+  for (let i = 0; i < sources.length; i++) {
+    const src = sources[i];
+    if (src.handedness !== 'right' || !src.gamepad) continue;
+    const grip = src.gamepad.buttons[1]?.pressed ?? false;
+    const b = src.gamepad.buttons[5]?.pressed ?? false;
+    return { controllerIndex: i, pressed: grip && b };
+  }
+  return null;
+}
+
+export function raycastFromController(
+  controller: THREE.Object3D,
+  targets: THREE.Object3D[]
+): THREE.Intersection | null {
+  const raycaster = new THREE.Raycaster();
+  const tempMatrix = new THREE.Matrix4().identity().extractRotation(controller.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+  const hits = raycaster.intersectObjects(targets, false);
+  return hits[0] ?? null;
+}

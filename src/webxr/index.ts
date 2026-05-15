@@ -1,8 +1,24 @@
 import * as THREE from 'three';
+import {
+  createPersistentAnchor,
+  deletePersistentAnchor,
+  MAX_NOTES,
+  restoreFromStorage,
+  supportsPersistentAnchors,
+  updateAnchorPoses,
+  type AnchoredEntry,
+} from './anchors';
 import { createSceneRig, type SceneRig } from './scene';
 import { getViewerHitTestSource, isARSupported, requestImmersiveAR } from './session';
-import { isHitHorizontal, makeReticle, setupControllers } from './input';
+import {
+  isHitHorizontal,
+  makeReticle,
+  pollRightGripB,
+  raycastFromController,
+  setupControllers,
+} from './input';
 import { createCubeMesh } from './notes';
+import { loadAll, remove as removeStored, saveAll, upsert } from './storage';
 import type { ARHandle, StartAROpts } from './types';
 
 export { isARSupported };
@@ -16,7 +32,10 @@ interface RuntimeState {
   reticle: THREE.Mesh;
   hasValidHit: boolean;
   lastHitMatrix: THREE.Matrix4;
-  placedMeshes: THREE.Mesh[];
+  anchors: AnchoredEntry[];
+  pendingPlacement: boolean;
+  prevDeleteCombo: boolean;
+  persistentSupported: boolean;
   pendingText: string;
   onStatus: NonNullable<StartAROpts['onStatus']>;
 }
@@ -38,7 +57,10 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       reticle,
       hasValidHit: false,
       lastHitMatrix: new THREE.Matrix4(),
-      placedMeshes: [],
+      anchors: [],
+      pendingPlacement: false,
+      prevDeleteCombo: false,
+      persistentSupported: false,
       pendingText: opts.initialText ?? '',
       onStatus,
     };
@@ -71,21 +93,28 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
 
   state.refSpace = await session.requestReferenceSpace('local-floor');
   state.hitTestSource = await getViewerHitTestSource(session);
+  state.persistentSupported = supportsPersistentAnchors(session);
+
+  if (!state.persistentSupported) {
+    onStatus('persistent-unsupported');
+  }
+
+  await restoreAnchors(state);
 
   const controllerHandles = setupControllers(scene, renderer, () => {
-    if (!state.hasValidHit) return;
-    placeCube(state);
+    state.pendingPlacement = true;
   });
 
   session.addEventListener('end', () => {
-    for (const mesh of state.placedMeshes) {
-      scene.remove(mesh);
-      mesh.geometry.dispose();
-      (mesh.material as THREE.Material).dispose();
+    for (const entry of state.anchors) {
+      scene.remove(entry.mesh);
+      disposeMesh(entry.mesh);
     }
-    state.placedMeshes.length = 0;
+    state.anchors = [];
     state.reticle.visible = false;
     state.hasValidHit = false;
+    state.pendingPlacement = false;
+    state.prevDeleteCombo = false;
     state.hitTestSource?.cancel?.();
     state.hitTestSource = null;
     state.refSpace = null;
@@ -95,14 +124,42 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
   });
 
   renderer.setAnimationLoop((_time, frame) => {
-    if (frame && state.refSpace && state.hitTestSource) {
-      updateReticleFromHitTest(state, frame);
+    if (frame && state.refSpace) {
+      if (state.hitTestSource) updateReticleFromHitTest(state, frame);
+      updateAnchorPoses(frame, state.refSpace, state.anchors);
+      maybePlace(state, frame);
+      maybeDelete(state, controllerHandles.controllers);
     }
     renderer.render(scene, camera);
   });
 
   onStatus('active');
   return buildHandle(state);
+}
+
+async function restoreAnchors(state: RuntimeState): Promise<void> {
+  if (!state.session || !state.persistentSupported) return;
+  const stored = loadAll();
+  if (stored.length === 0) return;
+
+  const restored = await restoreFromStorage(
+    state.session,
+    stored.map((r) => r.uuid)
+  );
+
+  const valid = stored.filter((r) => restored.has(r.uuid));
+  if (valid.length !== stored.length) {
+    saveAll(valid);
+  }
+
+  for (const record of valid) {
+    const anchor = restored.get(record.uuid);
+    if (!anchor) continue;
+    const mesh = createCubeMesh(0x4ade80);
+    mesh.matrixAutoUpdate = false;
+    state.rig.scene.add(mesh);
+    state.anchors.push({ uuid: record.uuid, anchor, mesh });
+  }
 }
 
 function updateReticleFromHitTest(state: RuntimeState, frame: XRFrame): void {
@@ -130,15 +187,79 @@ function updateReticleFromHitTest(state: RuntimeState, frame: XRFrame): void {
   state.hasValidHit = true;
 }
 
-function placeCube(state: RuntimeState): void {
-  const cube = createCubeMesh(0x4ade80);
-  cube.matrixAutoUpdate = false;
-  cube.matrix.copy(state.lastHitMatrix);
-  // raise cube so its base sits on the hit plane
+function maybePlace(state: RuntimeState, frame: XRFrame): void {
+  if (!state.pendingPlacement) return;
+  state.pendingPlacement = false;
+
+  if (!state.hasValidHit) return;
+
+  if (state.anchors.length >= MAX_NOTES) {
+    state.onStatus('limit');
+    return;
+  }
+
+  const snapshot = state.lastHitMatrix.clone();
   const lift = new THREE.Matrix4().makeTranslation(0, 0.05, 0);
-  cube.matrix.multiply(lift);
-  state.rig.scene.add(cube);
-  state.placedMeshes.push(cube);
+  const placementMatrix = snapshot.multiply(lift);
+
+  const mesh = createCubeMesh(0x4ade80);
+  mesh.matrixAutoUpdate = false;
+  mesh.matrix.copy(placementMatrix);
+  state.rig.scene.add(mesh);
+
+  if (!state.persistentSupported || !state.session || !state.refSpace) {
+    return;
+  }
+
+  createPersistentAnchor(frame, state.refSpace, placementMatrix).then((result) => {
+    if (!result) {
+      state.rig.scene.remove(mesh);
+      disposeMesh(mesh);
+      state.onStatus('error', 'Failed to create persistent anchor');
+      return;
+    }
+    state.anchors.push({ uuid: result.uuid, anchor: result.anchor, mesh });
+    upsert({ uuid: result.uuid, text: state.pendingText });
+  });
+}
+
+function maybeDelete(state: RuntimeState, controllers: THREE.Object3D[]): void {
+  if (!state.session) return;
+  const poll = pollRightGripB(state.session);
+  if (!poll) {
+    state.prevDeleteCombo = false;
+    return;
+  }
+  const justPressed = poll.pressed && !state.prevDeleteCombo;
+  state.prevDeleteCombo = poll.pressed;
+  if (!justPressed) return;
+
+  const controller = controllers[poll.controllerIndex];
+  if (!controller) return;
+
+  const meshes = state.anchors.map((e) => e.mesh);
+  const hit = raycastFromController(controller, meshes);
+  if (!hit) return;
+
+  const entry = state.anchors.find((e) => e.mesh === hit.object);
+  if (!entry) return;
+
+  state.rig.scene.remove(entry.mesh);
+  disposeMesh(entry.mesh);
+  state.anchors = state.anchors.filter((e) => e !== entry);
+  removeStored(entry.uuid);
+  if (state.session) {
+    void deletePersistentAnchor(state.session, entry.uuid);
+  }
+}
+
+function disposeMesh(obj: THREE.Object3D): void {
+  if (obj instanceof THREE.Mesh) {
+    obj.geometry.dispose();
+    const m = obj.material;
+    if (Array.isArray(m)) m.forEach((mat) => mat.dispose());
+    else m.dispose();
+  }
 }
 
 function buildHandle(state: RuntimeState): ARHandle {

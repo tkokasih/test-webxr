@@ -95,8 +95,8 @@ export default function App() {
         )}
 
         <p className="ar-hint">
-          Phase 2: a reticle follows your gaze across detected horizontal surfaces (floor, table).
-          Pull the trigger to place a green cube. Cubes do not yet persist across sessions.
+          Phase 3: trigger places a persistent cube anchored to the surface (up to 8). Hold the
+          right grip and press B while pointing at a cube to delete it. Cubes survive page reload.
         </p>
       </main>
       <div ref={containerRef} className="ar-canvas-container" aria-hidden="true" />
