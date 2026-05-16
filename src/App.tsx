@@ -157,9 +157,10 @@ export default function App() {
           </li>
         </ul>
         <p className="ar-hint">
-          Debug aids: a quadrant-colored floor marks the local-floor origin (white sphere) with axis
-          lines (red +X, green +Y, blue +Z). A head-locked console panel in the lower-right captures{' '}
-          <code>console.log/warn/error</code>.
+          Debug aids: a sparse grid on the floor (colored by quadrant — red front-right, green
+          front-left, yellow back-right, blue back-left) marks the local-floor origin (white sphere)
+          with axis lines (red +X, green +Y, blue +Z). A head-locked console panel in the
+          lower-right captures <code>console.log/warn/error</code>.
         </p>
       </main>
       <div ref={containerRef} className="ar-canvas-container" aria-hidden="true" />

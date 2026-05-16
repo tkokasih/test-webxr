@@ -1,38 +1,81 @@
 import * as THREE from 'three';
 
-const QUADRANT_SIZE = 4;
-const QUADRANT_OPACITY = 0.25;
+const GRID_SIZE = 8;
+const GRID_SPACING = 0.5;
 const AXIS_LENGTH = 1;
 const ORIGIN_RADIUS = 0.04;
+const GRID_OPACITY = 0.55;
+
+// Quadrant colors (matching the previous flood-fill scheme so origin orientation
+// is still recognizable). +X-Z front-right, -X-Z front-left, +X+Z back-right,
+// -X+Z back-left.
+const Q_FRONT_RIGHT: [number, number, number] = [0.94, 0.27, 0.27]; // red
+const Q_FRONT_LEFT: [number, number, number] = [0.13, 0.77, 0.37]; // green
+const Q_BACK_RIGHT: [number, number, number] = [0.92, 0.7, 0.03]; // yellow
+const Q_BACK_LEFT: [number, number, number] = [0.23, 0.51, 0.96]; // blue
+
+function quadrantColor(x: number, z: number): [number, number, number] {
+  if (x >= 0 && z < 0) return Q_FRONT_RIGHT;
+  if (x < 0 && z < 0) return Q_FRONT_LEFT;
+  if (x >= 0 && z >= 0) return Q_BACK_RIGHT;
+  return Q_BACK_LEFT;
+}
+
+function pushSegment(
+  positions: number[],
+  colors: number[],
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  midX: number,
+  midZ: number
+): void {
+  const [r, g, b] = quadrantColor(midX, midZ);
+  positions.push(ax, 0.001, az, bx, 0.001, bz);
+  colors.push(r, g, b, r, g, b);
+}
 
 export function createQuadrantFloor(): THREE.Group {
   const group = new THREE.Group();
   group.name = 'debug-floor';
 
-  // Quadrants at y=0. WebXR local-floor: +X right, +Y up, +Z backward (user faces -Z).
-  const quads: Array<{ name: string; color: number; cx: number; cz: number }> = [
-    { name: '+X-Z (front-right)', color: 0xef4444, cx: QUADRANT_SIZE / 2, cz: -QUADRANT_SIZE / 2 },
-    { name: '-X-Z (front-left)', color: 0x22c55e, cx: -QUADRANT_SIZE / 2, cz: -QUADRANT_SIZE / 2 },
-    { name: '+X+Z (back-right)', color: 0xeab308, cx: QUADRANT_SIZE / 2, cz: QUADRANT_SIZE / 2 },
-    { name: '-X+Z (back-left)', color: 0x3b82f6, cx: -QUADRANT_SIZE / 2, cz: QUADRANT_SIZE / 2 },
-  ];
+  const half = GRID_SIZE / 2;
+  const positions: number[] = [];
+  const colors: number[] = [];
 
-  const planeGeo = new THREE.PlaneGeometry(QUADRANT_SIZE, QUADRANT_SIZE).rotateX(-Math.PI / 2);
-  for (const q of quads) {
-    const mat = new THREE.MeshBasicMaterial({
-      color: q.color,
-      transparent: true,
-      opacity: QUADRANT_OPACITY,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    const mesh = new THREE.Mesh(planeGeo, mat);
-    mesh.position.set(q.cx, 0.001, q.cz);
-    mesh.name = q.name;
-    group.add(mesh);
+  // Lines parallel to X (vary x, constant z). Skip the line at z=0 because the
+  // colored axis lines cover that. Split each line at x=0 so the segment color
+  // matches its quadrant.
+  for (let i = 0; i <= GRID_SIZE / GRID_SPACING; i++) {
+    const z = -half + i * GRID_SPACING;
+    if (z === 0) continue;
+    pushSegment(positions, colors, -half, z, 0, z, -half / 2, z);
+    pushSegment(positions, colors, 0, z, half, z, half / 2, z);
   }
 
-  // Axis lines from origin: +X red, +Y green, +Z blue (Z extends backward, behind starting view).
+  // Lines parallel to Z (vary z, constant x). Skip x=0; split at z=0.
+  for (let i = 0; i <= GRID_SIZE / GRID_SPACING; i++) {
+    const x = -half + i * GRID_SPACING;
+    if (x === 0) continue;
+    pushSegment(positions, colors, x, -half, x, 0, x, -half / 2);
+    pushSegment(positions, colors, x, 0, x, half, x, half / 2);
+  }
+
+  const gridGeo = new THREE.BufferGeometry();
+  gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  gridGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  const gridMat = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: GRID_OPACITY,
+    depthWrite: false,
+  });
+  const grid = new THREE.LineSegments(gridGeo, gridMat);
+  grid.name = 'debug-grid';
+  group.add(grid);
+
+  // Axis lines from origin: +X red, +Y green, +Z blue.
   group.add(makeAxisLine(new THREE.Vector3(AXIS_LENGTH, 0, 0), 0xff0000));
   group.add(makeAxisLine(new THREE.Vector3(0, AXIS_LENGTH, 0), 0x00ff00));
   group.add(makeAxisLine(new THREE.Vector3(0, 0, AXIS_LENGTH), 0x0000ff));
@@ -59,7 +102,7 @@ export function disposeGroup(group: THREE.Group): void {
       const m = obj.material;
       if (Array.isArray(m)) m.forEach((mat) => mat.dispose());
       else m.dispose();
-    } else if (obj instanceof THREE.Line) {
+    } else if (obj instanceof THREE.Line || obj instanceof THREE.LineSegments) {
       obj.geometry.dispose();
       (obj.material as THREE.Material).dispose();
     }
