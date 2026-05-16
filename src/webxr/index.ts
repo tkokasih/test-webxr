@@ -11,7 +11,13 @@ import {
 import { createSceneRig, type SceneRig } from './scene';
 import { isARSupported, requestImmersiveAR } from './session';
 import { pollRightGripB, raycastFromController, setupControllers } from './input';
-import { billboardYAxis, createNoteMesh, disposeNoteGroup, getNoteText } from './notes';
+import {
+  billboardYAxis,
+  createNoteMesh,
+  disposeNoteGroup,
+  getNoteText,
+  updateNoteTexture,
+} from './notes';
 import {
   createConsolePanel,
   createQuadrantFloor,
@@ -49,10 +55,12 @@ interface RuntimeState {
   pendingPlacement: PendingPlacement | null;
   drag: DragState | null;
   pendingFinalize: PendingFinalize | null;
+  editingUuid: string | null;
   prevDeleteCombo: boolean;
   persistentSupported: boolean;
   pendingText: string;
   onStatus: NonNullable<StartAROpts['onStatus']>;
+  onEditRequest: StartAROpts['onEditRequest'] | null;
   debugFloor: THREE.Group | null;
   debugHud: THREE.Mesh | null;
 }
@@ -72,15 +80,18 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       pendingPlacement: null,
       drag: null,
       pendingFinalize: null,
+      editingUuid: null,
       prevDeleteCombo: false,
       persistentSupported: false,
       pendingText: opts.initialText ?? '',
       onStatus,
+      onEditRequest: opts.onEditRequest ?? null,
       debugFloor: null,
       debugHud: null,
     };
   } else {
     active.onStatus = onStatus;
+    active.onEditRequest = opts.onEditRequest ?? null;
     if (opts.initialText !== undefined) active.pendingText = opts.initialText;
   }
 
@@ -206,7 +217,8 @@ function handlePinch(state: RuntimeState, controller: THREE.XRTargetRaySpace): v
       return;
     }
     if (role === 'body') {
-      console.log('pinch on body (edit not yet wired)');
+      const entry = findOwningEntry(state, hit.object);
+      if (entry) void requestEdit(state, entry);
       return;
     }
   }
@@ -219,6 +231,36 @@ function handlePinch(state: RuntimeState, controller: THREE.XRTargetRaySpace): v
   );
   pos.add(forward);
   state.pendingPlacement = { position: pos };
+}
+
+async function requestEdit(state: RuntimeState, entry: AnchoredEntry): Promise<void> {
+  if (!state.onEditRequest) {
+    console.log('edit requested but no editor wired');
+    return;
+  }
+  if (state.editingUuid) {
+    console.log('edit already in progress');
+    return;
+  }
+  state.editingUuid = entry.uuid;
+  const current = getNoteText(entry.mesh);
+  console.log(`edit start: ${entry.uuid.slice(0, 8)}`);
+  let newText: string | null;
+  try {
+    newText = await state.onEditRequest(entry.uuid, current);
+  } catch (err) {
+    console.warn(`edit failed: ${err instanceof Error ? err.message : String(err)}`);
+    state.editingUuid = null;
+    return;
+  }
+  state.editingUuid = null;
+  if (newText === null || newText === current) {
+    console.log('edit cancelled or no-op');
+    return;
+  }
+  updateNoteTexture(entry.mesh, newText);
+  upsert({ uuid: entry.uuid, text: newText });
+  console.log(`edit saved: ${entry.uuid.slice(0, 8)}`);
 }
 
 function handleSelectEnd(state: RuntimeState, controller: THREE.XRTargetRaySpace): void {

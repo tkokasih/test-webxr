@@ -170,3 +170,84 @@ h1 {
   background: rgba(15, 23, 42, 0.45);
   pointer-events: auto;
 }
+
+.xr-edit-card {
+  background: #ffffff;
+  color: #0f172a;
+  padding: 1.25rem;
+  border-radius: 0.75rem;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  width: min(28rem, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.xr-edit-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.xr-edit-textarea {
+  width: 100%;
+  padding: 0.75rem;
+  font: inherit;
+  font-size: 1rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  resize: vertical;
+  background: #f8fafc;
+}
+
+.xr-edit-textarea:focus {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+  border-color: transparent;
+  background: #ffffff;
+}
+
+.xr-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.xr-edit-btn {
+  padding: 0.55rem 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.xr-edit-btn--primary {
+  background: #2563eb;
+  color: #ffffff;
+  border: 1px solid #2563eb;
+}
+
+.xr-edit-btn--primary:hover {
+  background: #1d4ed8;
+}
+
+.xr-edit-btn--ghost {
+  background: transparent;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+}
+
+.xr-edit-btn--ghost:hover {
+  background: #f1f5f9;
+}
+
+.ar-hint--list {
+  list-style: none;
+  padding-left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.ar-hint--list li {
+  font-size: 0.9rem;
+}

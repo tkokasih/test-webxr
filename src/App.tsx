@@ -36,15 +36,22 @@ function statusMessage(status: ARStatus, detail?: string): string {
   }
 }
 
+interface EditingNote {
+  uuid: string;
+  initialText: string;
+}
+
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const handleRef = useRef<ARHandle | null>(null);
+  const editResolveRef = useRef<((text: string | null) => void) | null>(null);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [status, setStatus] = useState<ARStatus>('idle');
   const [statusDetail, setStatusDetail] = useState<string | undefined>(undefined);
-  const [draftText, setDraftText] = useState('');
-  const [activeText, setActiveText] = useState('');
+  const [editingNote, setEditingNote] = useState<EditingNote | null>(null);
+  const [editDraft, setEditDraft] = useState('');
 
   useEffect(() => {
     isARSupported().then((ok) => setSupported(ok));
@@ -52,25 +59,51 @@ export default function App() {
 
   useEffect(() => {
     return () => {
+      editResolveRef.current?.(null);
+      editResolveRef.current = null;
       handleRef.current?.end();
     };
   }, []);
 
-  function commitText() {
-    setActiveText(draftText);
-    handleRef.current?.setPendingText(draftText);
+  useEffect(() => {
+    if (editingNote && textareaRef.current) {
+      textareaRef.current.focus();
+      textareaRef.current.select();
+    }
+  }, [editingNote]);
+
+  function handleEditRequest(_uuid: string, currentText: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      // Resolve any prior pending edit defensively.
+      editResolveRef.current?.(null);
+      editResolveRef.current = resolve;
+      setEditDraft(currentText);
+      setEditingNote({ uuid: _uuid, initialText: currentText });
+    });
+  }
+
+  function commitEdit() {
+    editResolveRef.current?.(editDraft);
+    editResolveRef.current = null;
+    setEditingNote(null);
+  }
+
+  function cancelEdit() {
+    editResolveRef.current?.(null);
+    editResolveRef.current = null;
+    setEditingNote(null);
   }
 
   async function onEnterAR() {
     if (!containerRef.current) return;
     try {
       const handle = await startAR(containerRef.current, {
-        initialText: activeText,
         overlayRoot: overlayRef.current ?? undefined,
         onStatus: (s, d) => {
           setStatus(s);
           setStatusDetail(d);
         },
+        onEditRequest: handleEditRequest,
       });
       handleRef.current = handle;
     } catch {
@@ -78,40 +111,17 @@ export default function App() {
     }
   }
 
+  const overlayActive = editingNote !== null;
+
   return (
     <>
       <BranchBanner />
       <main className="pre-ar">
         <h1>WebXR Spatial Notes</h1>
         <p>
-          Place persistent text notes anchored to real-world surfaces, viewed through Meta Quest 3
-          passthrough.
+          Place persistent text notes anchored in mid-air, viewed through Meta Quest 3 passthrough.
+          Hand tracking and controllers both work — pinch / pull trigger does everything.
         </p>
-
-        <label className="note-label" htmlFor="note-text">
-          Note text (used for the next placement):
-        </label>
-        <textarea
-          id="note-text"
-          className="note-textarea"
-          value={draftText}
-          onChange={(e) => setDraftText(e.target.value)}
-          rows={3}
-          placeholder="e.g. buy milk"
-        />
-        <div className="note-actions">
-          <button
-            type="button"
-            className="set-text-btn"
-            onClick={commitText}
-            disabled={draftText === activeText}
-          >
-            Set
-          </button>
-          <span className="active-text">
-            Active: <strong>{activeText || '(empty)'}</strong>
-          </span>
-        </div>
 
         {supported === null && <p className="ar-status">Checking WebXR support…</p>}
         {supported === false && (
@@ -129,11 +139,23 @@ export default function App() {
           <p className="ar-status">{statusMessage(status, statusDetail)}</p>
         )}
 
-        <p className="ar-hint">
-          Pinch (or pull the controller trigger) in mid-air to create an empty sticky note at your
-          hand. Notes are billboarded toward you and persist across reloads. Grip + B on the right
-          controller still deletes a pointed-at note as a fallback.
-        </p>
+        <ul className="ar-hint ar-hint--list">
+          <li>
+            <strong>Create</strong>: pinch in empty space to spawn an empty sticky note at your
+            hand.
+          </li>
+          <li>
+            <strong>Edit</strong>: pinch the card body → a textarea opens on top of the AR view with
+            the Quest system keyboard.
+          </li>
+          <li>
+            <strong>Move</strong>: pinch the cyan sphere on the top edge and drag.
+          </li>
+          <li>
+            <strong>Delete</strong>: pinch the red sphere on the top-right of the card. Controllers
+            can also use grip + B as a fallback.
+          </li>
+        </ul>
         <p className="ar-hint">
           Debug aids: a quadrant-colored floor marks the local-floor origin (white sphere) with axis
           lines (red +X, green +Y, blue +Z). A head-locked console panel in the lower-right captures{' '}
@@ -141,7 +163,41 @@ export default function App() {
         </p>
       </main>
       <div ref={containerRef} className="ar-canvas-container" aria-hidden="true" />
-      <div ref={overlayRef} id="xr-overlay" className="xr-overlay" aria-hidden="true" />
+      <div
+        ref={overlayRef}
+        id="xr-overlay"
+        className="xr-overlay"
+        data-active={overlayActive ? 'true' : 'false'}
+      >
+        {editingNote && (
+          <div className="xr-edit-card">
+            <label className="xr-edit-label" htmlFor="xr-edit-textarea">
+              Edit note text
+            </label>
+            <textarea
+              ref={textareaRef}
+              id="xr-edit-textarea"
+              className="xr-edit-textarea"
+              value={editDraft}
+              onChange={(e) => setEditDraft(e.target.value)}
+              rows={4}
+              placeholder="Type here…"
+            />
+            <div className="xr-edit-actions">
+              <button type="button" className="xr-edit-btn xr-edit-btn--ghost" onClick={cancelEdit}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="xr-edit-btn xr-edit-btn--primary"
+                onClick={commitEdit}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </>
   );
 }
