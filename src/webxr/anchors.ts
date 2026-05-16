@@ -6,6 +6,7 @@ export interface AnchoredEntry {
   uuid: string;
   anchor: XRAnchor;
   mesh: THREE.Object3D;
+  recreating?: boolean;
 }
 
 export function supportsPersistentAnchors(session: XRSession): boolean {
@@ -78,6 +79,7 @@ export function updateAnchorPoses(
   entries: Iterable<AnchoredEntry>
 ): void {
   for (const entry of entries) {
+    if (entry.recreating) continue;
     const pose = frame.getPose(entry.anchor.anchorSpace, refSpace);
     if (!pose) {
       entry.mesh.visible = false;

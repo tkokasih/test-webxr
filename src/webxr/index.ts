@@ -11,7 +11,7 @@ import {
 import { createSceneRig, type SceneRig } from './scene';
 import { isARSupported, requestImmersiveAR } from './session';
 import { pollRightGripB, raycastFromController, setupControllers } from './input';
-import { billboardYAxis, createNoteMesh, disposeNoteGroup } from './notes';
+import { billboardYAxis, createNoteMesh, disposeNoteGroup, getNoteText } from './notes';
 import {
   createConsolePanel,
   createQuadrantFloor,
@@ -30,12 +30,25 @@ interface PendingPlacement {
   position: THREE.Vector3;
 }
 
+interface DragState {
+  entry: AnchoredEntry;
+  controller: THREE.XRTargetRaySpace;
+  controllerLocalOffset: THREE.Vector3;
+}
+
+interface PendingFinalize {
+  entry: AnchoredEntry;
+  matrix: THREE.Matrix4;
+}
+
 interface RuntimeState {
   rig: SceneRig;
   session: XRSession | null;
   refSpace: XRReferenceSpace | null;
   anchors: AnchoredEntry[];
   pendingPlacement: PendingPlacement | null;
+  drag: DragState | null;
+  pendingFinalize: PendingFinalize | null;
   prevDeleteCombo: boolean;
   persistentSupported: boolean;
   pendingText: string;
@@ -57,6 +70,8 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       refSpace: null,
       anchors: [],
       pendingPlacement: null,
+      drag: null,
+      pendingFinalize: null,
       prevDeleteCombo: false,
       persistentSupported: false,
       pendingText: opts.initialText ?? '',
@@ -112,9 +127,16 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
   console.log(`persistent anchors: ${state.persistentSupported ? 'supported' : 'unsupported'}`);
   console.log(`restored anchors: ${state.anchors.length}`);
 
-  const controllerHandles = setupControllers(scene, renderer, (controller) => {
-    handlePinch(state, controller);
-  });
+  const controllerHandles = setupControllers(
+    scene,
+    renderer,
+    (controller) => {
+      handlePinch(state, controller);
+    },
+    (controller) => {
+      handleSelectEnd(state, controller);
+    }
+  );
 
   session.addEventListener('end', () => {
     for (const entry of state.anchors) {
@@ -137,6 +159,8 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
     }
     uninstallConsoleCapture();
     state.pendingPlacement = null;
+    state.drag = null;
+    state.pendingFinalize = null;
     state.prevDeleteCombo = false;
     state.refSpace = null;
     state.session = null;
@@ -147,8 +171,10 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
   renderer.setAnimationLoop((_time, frame) => {
     if (frame && state.refSpace) {
       updateAnchorPoses(frame, state.refSpace, state.anchors);
+      updateDrag(state);
       billboardNotes(state);
       maybePlace(state, frame);
+      maybeFinalizeDrag(state, frame);
       maybeDelete(state, controllerHandles.controllers);
       if (state.debugHud) updateHud(state.debugHud, renderer.xr.getCamera());
     }
@@ -174,9 +200,13 @@ function handlePinch(state: RuntimeState, controller: THREE.XRTargetRaySpace): v
       }
       return;
     }
-    // body and move-handle: swallow the pinch (no-op until commits 4/5).
-    if (role === 'body' || role === 'move-handle') {
-      console.log(`pinch on ${role} (no-op for now)`);
+    if (role === 'move-handle') {
+      const entry = findOwningEntry(state, hit.object);
+      if (entry) startDrag(state, entry, controller);
+      return;
+    }
+    if (role === 'body') {
+      console.log('pinch on body (edit not yet wired)');
       return;
     }
   }
@@ -189,6 +219,74 @@ function handlePinch(state: RuntimeState, controller: THREE.XRTargetRaySpace): v
   );
   pos.add(forward);
   state.pendingPlacement = { position: pos };
+}
+
+function handleSelectEnd(state: RuntimeState, controller: THREE.XRTargetRaySpace): void {
+  if (!state.drag || state.drag.controller !== controller) return;
+  const { entry } = state.drag;
+  const finalPos = entry.mesh.position.clone();
+  const finalQuat = entry.mesh.quaternion.clone();
+  const matrix = new THREE.Matrix4().compose(finalPos, finalQuat, new THREE.Vector3(1, 1, 1));
+  state.drag = null;
+  entry.recreating = true;
+  state.pendingFinalize = { entry, matrix };
+  console.log(`drag end: ${entry.uuid.slice(0, 8)}`);
+}
+
+function startDrag(
+  state: RuntimeState,
+  entry: AnchoredEntry,
+  controller: THREE.XRTargetRaySpace
+): void {
+  const inv = new THREE.Matrix4().copy(controller.matrixWorld).invert();
+  const local = entry.mesh.position.clone().applyMatrix4(inv);
+  state.drag = { entry, controller, controllerLocalOffset: local };
+  console.log(`drag start: ${entry.uuid.slice(0, 8)}`);
+}
+
+const _dragWorld = new THREE.Vector3();
+
+function updateDrag(state: RuntimeState): void {
+  if (!state.drag) return;
+  _dragWorld.copy(state.drag.controllerLocalOffset).applyMatrix4(state.drag.controller.matrixWorld);
+  state.drag.entry.mesh.position.copy(_dragWorld);
+}
+
+function maybeFinalizeDrag(state: RuntimeState, frame: XRFrame): void {
+  if (!state.pendingFinalize) return;
+  const { entry, matrix } = state.pendingFinalize;
+  state.pendingFinalize = null;
+  void recreateAnchor(state, entry, frame, matrix);
+}
+
+async function recreateAnchor(
+  state: RuntimeState,
+  entry: AnchoredEntry,
+  frame: XRFrame,
+  matrix: THREE.Matrix4
+): Promise<void> {
+  if (!state.session || !state.refSpace || !state.persistentSupported) {
+    entry.recreating = false;
+    return;
+  }
+  const oldUuid = entry.uuid;
+  const text = getNoteText(entry.mesh);
+
+  const result = await createPersistentAnchor(frame, state.refSpace, matrix);
+  if (!result) {
+    entry.recreating = false;
+    state.onStatus('error', 'Failed to recreate anchor after move');
+    return;
+  }
+
+  await deletePersistentAnchor(state.session, oldUuid);
+  removeStored(oldUuid);
+
+  entry.uuid = result.uuid;
+  entry.anchor = result.anchor;
+  upsert({ uuid: result.uuid, text });
+  entry.recreating = false;
+  console.log(`anchor recreated: ${oldUuid.slice(0, 8)} → ${result.uuid.slice(0, 8)}`);
 }
 
 function findOwningEntry(state: RuntimeState, hitObj: THREE.Object3D): AnchoredEntry | undefined {
