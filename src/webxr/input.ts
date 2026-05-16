@@ -30,7 +30,8 @@ export interface ControllerHandles {
 export function setupControllers(
   scene: THREE.Scene,
   renderer: THREE.WebGLRenderer,
-  onSelect: () => void
+  onSelect: (controller: THREE.XRTargetRaySpace) => void,
+  onSelectEnd?: (controller: THREE.XRTargetRaySpace) => void
 ): ControllerHandles {
   const controllers: THREE.XRTargetRaySpace[] = [];
   const cleanups: Array<() => void> = [];
@@ -42,9 +43,15 @@ export function setupControllers(
     scene.add(controller);
     controllers.push(controller);
 
-    const handler = () => onSelect();
-    controller.addEventListener('selectstart', handler);
-    cleanups.push(() => controller.removeEventListener('selectstart', handler));
+    const startHandler = () => onSelect(controller);
+    controller.addEventListener('selectstart', startHandler);
+    cleanups.push(() => controller.removeEventListener('selectstart', startHandler));
+
+    if (onSelectEnd) {
+      const endHandler = () => onSelectEnd(controller);
+      controller.addEventListener('selectend', endHandler);
+      cleanups.push(() => controller.removeEventListener('selectend', endHandler));
+    }
   }
 
   return {

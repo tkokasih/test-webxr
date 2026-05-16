@@ -9,14 +9,8 @@ import {
   type AnchoredEntry,
 } from './anchors';
 import { createSceneRig, type SceneRig } from './scene';
-import { getViewerHitTestSource, isARSupported, requestImmersiveAR } from './session';
-import {
-  isHitHorizontal,
-  makeReticle,
-  pollRightGripB,
-  raycastFromController,
-  setupControllers,
-} from './input';
+import { isARSupported, requestImmersiveAR } from './session';
+import { pollRightGripB, raycastFromController, setupControllers } from './input';
 import { billboardYAxis, createNoteMesh } from './notes';
 import {
   createConsolePanel,
@@ -32,16 +26,16 @@ import type { ARHandle, StartAROpts } from './types';
 export { isARSupported };
 export type { ARHandle, ARStatus, StartAROpts } from './types';
 
+interface PendingPlacement {
+  position: THREE.Vector3;
+}
+
 interface RuntimeState {
   rig: SceneRig;
   session: XRSession | null;
   refSpace: XRReferenceSpace | null;
-  hitTestSource: XRHitTestSource | null;
-  reticle: THREE.Mesh;
-  hasValidHit: boolean;
-  lastHitMatrix: THREE.Matrix4;
   anchors: AnchoredEntry[];
-  pendingPlacement: boolean;
+  pendingPlacement: PendingPlacement | null;
   prevDeleteCombo: boolean;
   persistentSupported: boolean;
   pendingText: string;
@@ -57,18 +51,12 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
 
   if (!active) {
     const rig = createSceneRig(container);
-    const reticle = makeReticle();
-    rig.scene.add(reticle);
     active = {
       rig,
       session: null,
       refSpace: null,
-      hitTestSource: null,
-      reticle,
-      hasValidHit: false,
-      lastHitMatrix: new THREE.Matrix4(),
       anchors: [],
-      pendingPlacement: false,
+      pendingPlacement: null,
       prevDeleteCombo: false,
       persistentSupported: false,
       pendingText: opts.initialText ?? '',
@@ -104,7 +92,6 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
   await renderer.xr.setSession(session);
 
   state.refSpace = await session.requestReferenceSpace('local-floor');
-  state.hitTestSource = await getViewerHitTestSource(session);
   state.persistentSupported = supportsPersistentAnchors(session);
 
   if (!state.persistentSupported) {
@@ -125,8 +112,15 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
   console.log(`persistent anchors: ${state.persistentSupported ? 'supported' : 'unsupported'}`);
   console.log(`restored anchors: ${state.anchors.length}`);
 
-  const controllerHandles = setupControllers(scene, renderer, () => {
-    state.pendingPlacement = true;
+  const controllerHandles = setupControllers(scene, renderer, (controller) => {
+    const pos = new THREE.Vector3();
+    controller.getWorldPosition(pos);
+    // Offset slightly forward from the hand (controller -Z is forward).
+    const forward = new THREE.Vector3(0, 0, -0.1).applyMatrix4(
+      new THREE.Matrix4().extractRotation(controller.matrixWorld)
+    );
+    pos.add(forward);
+    state.pendingPlacement = { position: pos };
   });
 
   session.addEventListener('end', () => {
@@ -146,12 +140,8 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       state.debugHud = null;
     }
     uninstallConsoleCapture();
-    state.reticle.visible = false;
-    state.hasValidHit = false;
-    state.pendingPlacement = false;
+    state.pendingPlacement = null;
     state.prevDeleteCombo = false;
-    state.hitTestSource?.cancel?.();
-    state.hitTestSource = null;
     state.refSpace = null;
     state.session = null;
     controllerHandles.dispose();
@@ -160,7 +150,6 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
 
   renderer.setAnimationLoop((_time, frame) => {
     if (frame && state.refSpace) {
-      if (state.hitTestSource) updateReticleFromHitTest(state, frame);
       updateAnchorPoses(frame, state.refSpace, state.anchors);
       billboardNotes(state);
       maybePlace(state, frame);
@@ -208,53 +197,32 @@ function billboardNotes(state: RuntimeState): void {
   }
 }
 
-function updateReticleFromHitTest(state: RuntimeState, frame: XRFrame): void {
-  const hits = frame.getHitTestResults(state.hitTestSource!);
-  if (hits.length === 0) {
-    state.reticle.visible = false;
-    state.hasValidHit = false;
-    return;
-  }
-  const pose = hits[0].getPose(state.refSpace!);
-  if (!pose) {
-    state.reticle.visible = false;
-    state.hasValidHit = false;
-    return;
-  }
-  const m = pose.transform.matrix;
-  if (!isHitHorizontal(m)) {
-    state.reticle.visible = false;
-    state.hasValidHit = false;
-    return;
-  }
-  state.reticle.matrix.fromArray(m);
-  state.reticle.visible = true;
-  state.lastHitMatrix.fromArray(m);
-  state.hasValidHit = true;
-}
-
 function maybePlace(state: RuntimeState, frame: XRFrame): void {
   if (!state.pendingPlacement) return;
-  state.pendingPlacement = false;
-
-  if (!state.hasValidHit) return;
+  const { position } = state.pendingPlacement;
+  state.pendingPlacement = null;
 
   if (state.anchors.length >= MAX_NOTES) {
     state.onStatus('limit');
     return;
   }
 
-  const placementMatrix = state.lastHitMatrix
-    .clone()
-    .multiply(new THREE.Matrix4().makeTranslation(0, 0.15, 0));
+  // Billboard the placement matrix to face the camera (Y-axis locked).
+  const camPos = new THREE.Vector3();
+  state.rig.camera.getWorldPosition(camPos);
+  const lookTarget = new THREE.Vector3(camPos.x, position.y, camPos.z);
+  const orienter = new THREE.Object3D();
+  orienter.position.copy(position);
+  orienter.lookAt(lookTarget);
+  const placementMatrix = new THREE.Matrix4().compose(
+    position,
+    orienter.quaternion,
+    new THREE.Vector3(1, 1, 1)
+  );
 
-  const noteText = state.pendingText;
+  const noteText = '';
   const mesh = createNoteMesh(noteText);
-  const pos = new THREE.Vector3();
-  const quat = new THREE.Quaternion();
-  const scl = new THREE.Vector3();
-  placementMatrix.decompose(pos, quat, scl);
-  mesh.position.copy(pos);
+  mesh.position.copy(position);
   state.rig.scene.add(mesh);
 
   if (!state.persistentSupported || !state.session || !state.refSpace) {

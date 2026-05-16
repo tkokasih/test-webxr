@@ -130,8 +130,9 @@ export default function App() {
         )}
 
         <p className="ar-hint">
-          Phase 4: trigger places a translucent note card showing the active text, anchored to the
-          surface and billboarded toward you. Grip + B deletes. Notes survive page reload.
+          Pinch (or pull the controller trigger) in mid-air to create an empty sticky note at your
+          hand. Notes are billboarded toward you and persist across reloads. Grip + B on the right
+          controller still deletes a pointed-at note as a fallback.
         </p>
         <p className="ar-hint">
           Debug aids: a quadrant-colored floor marks the local-floor origin (white sphere) with axis
