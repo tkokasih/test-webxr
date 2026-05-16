@@ -11,7 +11,7 @@ import {
 import { createSceneRig, type SceneRig } from './scene';
 import { isARSupported, requestImmersiveAR } from './session';
 import { pollRightGripB, raycastFromController, setupControllers } from './input';
-import { billboardYAxis, createNoteMesh } from './notes';
+import { billboardYAxis, createNoteMesh, disposeNoteGroup } from './notes';
 import {
   createConsolePanel,
   createQuadrantFloor,
@@ -113,20 +113,13 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
   console.log(`restored anchors: ${state.anchors.length}`);
 
   const controllerHandles = setupControllers(scene, renderer, (controller) => {
-    const pos = new THREE.Vector3();
-    controller.getWorldPosition(pos);
-    // Offset slightly forward from the hand (controller -Z is forward).
-    const forward = new THREE.Vector3(0, 0, -0.1).applyMatrix4(
-      new THREE.Matrix4().extractRotation(controller.matrixWorld)
-    );
-    pos.add(forward);
-    state.pendingPlacement = { position: pos };
+    handlePinch(state, controller);
   });
 
   session.addEventListener('end', () => {
     for (const entry of state.anchors) {
       scene.remove(entry.mesh);
-      if (entry.mesh instanceof THREE.Mesh) disposeNoteMesh(entry.mesh);
+      disposeNoteGroup(entry.mesh);
     }
     state.anchors = [];
     if (state.debugFloor) {
@@ -136,7 +129,10 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
     }
     if (state.debugHud) {
       scene.remove(state.debugHud);
-      disposeNoteMesh(state.debugHud);
+      state.debugHud.geometry.dispose();
+      (state.debugHud.material as THREE.Material).dispose();
+      const hudUd = state.debugHud.userData as { texture?: THREE.Texture };
+      hudUd.texture?.dispose();
       state.debugHud = null;
     }
     uninstallConsoleCapture();
@@ -161,6 +157,58 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
 
   onStatus('active');
   return buildHandle(state);
+}
+
+function handlePinch(state: RuntimeState, controller: THREE.XRTargetRaySpace): void {
+  // Raycast against note groups (recursive so we hit body / handles).
+  const noteRoots = state.anchors.map((e) => e.mesh);
+  const hit = raycastFromController(controller, noteRoots, true);
+
+  if (hit) {
+    const role = (hit.object.userData as { role?: string }).role;
+    if (role === 'delete-handle') {
+      const entry = findOwningEntry(state, hit.object);
+      if (entry) {
+        console.log(`delete handle pinched: ${entry.uuid.slice(0, 8)}`);
+        deleteEntry(state, entry);
+      }
+      return;
+    }
+    // body and move-handle: swallow the pinch (no-op until commits 4/5).
+    if (role === 'body' || role === 'move-handle') {
+      console.log(`pinch on ${role} (no-op for now)`);
+      return;
+    }
+  }
+
+  // No relevant hit — queue a new note placement at the controller position.
+  const pos = new THREE.Vector3();
+  controller.getWorldPosition(pos);
+  const forward = new THREE.Vector3(0, 0, -0.1).applyMatrix4(
+    new THREE.Matrix4().extractRotation(controller.matrixWorld)
+  );
+  pos.add(forward);
+  state.pendingPlacement = { position: pos };
+}
+
+function findOwningEntry(state: RuntimeState, hitObj: THREE.Object3D): AnchoredEntry | undefined {
+  let cur: THREE.Object3D | null = hitObj;
+  while (cur) {
+    const entry = state.anchors.find((e) => e.mesh === cur);
+    if (entry) return entry;
+    cur = cur.parent;
+  }
+  return undefined;
+}
+
+function deleteEntry(state: RuntimeState, entry: AnchoredEntry): void {
+  state.rig.scene.remove(entry.mesh);
+  disposeNoteGroup(entry.mesh);
+  state.anchors = state.anchors.filter((e) => e !== entry);
+  removeStored(entry.uuid);
+  if (state.session) {
+    void deletePersistentAnchor(state.session, entry.uuid);
+  }
 }
 
 async function restoreAnchors(state: RuntimeState): Promise<void> {
@@ -207,7 +255,6 @@ function maybePlace(state: RuntimeState, frame: XRFrame): void {
     return;
   }
 
-  // Billboard the placement matrix to face the camera (Y-axis locked).
   const camPos = new THREE.Vector3();
   state.rig.camera.getWorldPosition(camPos);
   const lookTarget = new THREE.Vector3(camPos.x, position.y, camPos.z);
@@ -232,22 +279,13 @@ function maybePlace(state: RuntimeState, frame: XRFrame): void {
   createPersistentAnchor(frame, state.refSpace, placementMatrix).then((result) => {
     if (!result) {
       state.rig.scene.remove(mesh);
-      disposeNoteMesh(mesh);
+      disposeNoteGroup(mesh);
       state.onStatus('error', 'Failed to create persistent anchor');
       return;
     }
     state.anchors.push({ uuid: result.uuid, anchor: result.anchor, mesh });
     upsert({ uuid: result.uuid, text: noteText });
   });
-}
-
-function disposeNoteMesh(mesh: THREE.Mesh): void {
-  mesh.geometry.dispose();
-  const m = mesh.material;
-  if (Array.isArray(m)) m.forEach((mat) => mat.dispose());
-  else m.dispose();
-  const ud = mesh.userData as { texture?: THREE.Texture };
-  ud.texture?.dispose();
 }
 
 function maybeDelete(state: RuntimeState, controllers: THREE.Object3D[]): void {
@@ -264,20 +302,13 @@ function maybeDelete(state: RuntimeState, controllers: THREE.Object3D[]): void {
   const controller = controllers[poll.controllerIndex];
   if (!controller) return;
 
-  const meshes = state.anchors.map((e) => e.mesh);
-  const hit = raycastFromController(controller, meshes);
+  const noteRoots = state.anchors.map((e) => e.mesh);
+  const hit = raycastFromController(controller, noteRoots, true);
   if (!hit) return;
 
-  const entry = state.anchors.find((e) => e.mesh === hit.object);
+  const entry = findOwningEntry(state, hit.object);
   if (!entry) return;
-
-  state.rig.scene.remove(entry.mesh);
-  if (entry.mesh instanceof THREE.Mesh) disposeNoteMesh(entry.mesh);
-  state.anchors = state.anchors.filter((e) => e !== entry);
-  removeStored(entry.uuid);
-  if (state.session) {
-    void deletePersistentAnchor(state.session, entry.uuid);
-  }
+  deleteEntry(state, entry);
 }
 
 function buildHandle(state: RuntimeState): ARHandle {

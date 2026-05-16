@@ -85,12 +85,13 @@ export function pollRightGripB(session: XRSession): {
 
 export function raycastFromController(
   controller: THREE.Object3D,
-  targets: THREE.Object3D[]
+  targets: THREE.Object3D[],
+  recursive = false
 ): THREE.Intersection | null {
   const raycaster = new THREE.Raycaster();
   const tempMatrix = new THREE.Matrix4().identity().extractRotation(controller.matrixWorld);
   raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-  const hits = raycaster.intersectObjects(targets, false);
+  const hits = raycaster.intersectObjects(targets, recursive);
   return hits[0] ?? null;
 }
