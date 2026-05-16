@@ -4,7 +4,7 @@ export const MAX_NOTES = 8;
 
 export interface AnchoredEntry {
   uuid: string;
-  anchor: XRAnchor;
+  anchor: XRAnchor | null;
   mesh: THREE.Object3D;
   recreating?: boolean;
 }
@@ -80,6 +80,7 @@ export function updateAnchorPoses(
 ): void {
   for (const entry of entries) {
     if (entry.recreating) continue;
+    if (!entry.anchor) continue;
     const pose = frame.getPose(entry.anchor.anchorSpace, refSpace);
     if (!pose) {
       entry.mesh.visible = false;

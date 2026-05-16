@@ -246,9 +246,97 @@ const HUD_OFFSET = new THREE.Matrix4().compose(
   new THREE.Vector3(1, 1, 1)
 );
 
+const DISPENSER_OFFSET = new THREE.Matrix4().compose(
+  new THREE.Vector3(-0.22, -0.18, -0.55),
+  new THREE.Quaternion(),
+  new THREE.Vector3(1, 1, 1)
+);
+
 const _tmp = new THREE.Matrix4();
 
+function updateHeadLocked(obj: THREE.Object3D, camera: THREE.Camera, offset: THREE.Matrix4): void {
+  _tmp.multiplyMatrices(camera.matrixWorld, offset);
+  obj.matrix.copy(_tmp);
+}
+
 export function updateHud(hud: THREE.Object3D, camera: THREE.Camera): void {
-  _tmp.multiplyMatrices(camera.matrixWorld, HUD_OFFSET);
-  hud.matrix.copy(_tmp);
+  updateHeadLocked(hud, camera, HUD_OFFSET);
+}
+
+export function updateDispenser(disp: THREE.Object3D, camera: THREE.Camera): void {
+  updateHeadLocked(disp, camera, DISPENSER_OFFSET);
+}
+
+// --- Dispenser sticky note (head-locked "drag to create" affordance) ---
+
+const DISP_CANVAS_W = 384;
+const DISP_CANVAS_H = 192;
+const DISP_PLANE_W = 0.24;
+const DISP_PLANE_H = 0.12;
+
+interface DispenserUserData {
+  role: 'dispenser';
+  texture: THREE.CanvasTexture;
+}
+
+export function createDispenser(): THREE.Mesh {
+  const canvas = document.createElement('canvas');
+  canvas.width = DISP_CANVAS_W;
+  canvas.height = DISP_CANVAS_H;
+  drawDispenserCanvas(canvas);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+
+  const geo = new THREE.PlaneGeometry(DISP_PLANE_W, DISP_PLANE_H);
+  const mat = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 999;
+  mesh.matrixAutoUpdate = false;
+  const ud: DispenserUserData = { role: 'dispenser', texture };
+  mesh.userData = ud;
+  return mesh;
+}
+
+export function disposeDispenser(mesh: THREE.Mesh): void {
+  mesh.geometry.dispose();
+  (mesh.material as THREE.Material).dispose();
+  (mesh.userData as DispenserUserData).texture.dispose();
+}
+
+function drawDispenserCanvas(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.fillStyle = 'rgba(34, 197, 94, 0.85)';
+  ctx.beginPath();
+  ctx.roundRect(0, 0, W, H, 20);
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(2, 2, W - 4, H - 4, 18);
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.font = 'bold 40px system-ui, -apple-system, "Segoe UI", sans-serif';
+  ctx.fillText('+', W / 2, H / 2 - 24);
+
+  ctx.font = '22px system-ui, -apple-system, "Segoe UI", sans-serif';
+  ctx.fillText('drag to add', W / 2, H / 2 + 28);
 }

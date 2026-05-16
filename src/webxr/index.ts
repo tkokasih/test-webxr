@@ -20,10 +20,13 @@ import {
 } from './notes';
 import {
   createConsolePanel,
+  createDispenser,
   createQuadrantFloor,
+  disposeDispenser,
   disposeGroup,
   installConsoleCapture,
   uninstallConsoleCapture,
+  updateDispenser,
   updateHud,
 } from './debug';
 import { loadAll, remove as removeStored, saveAll, upsert } from './storage';
@@ -31,10 +34,6 @@ import type { ARHandle, StartAROpts } from './types';
 
 export { isARSupported };
 export type { ARHandle, ARStatus, StartAROpts } from './types';
-
-interface PendingPlacement {
-  position: THREE.Vector3;
-}
 
 interface DragState {
   entry: AnchoredEntry;
@@ -52,7 +51,6 @@ interface RuntimeState {
   session: XRSession | null;
   refSpace: XRReferenceSpace | null;
   anchors: AnchoredEntry[];
-  pendingPlacement: PendingPlacement | null;
   drag: DragState | null;
   pendingFinalize: PendingFinalize | null;
   editingUuid: string | null;
@@ -63,6 +61,7 @@ interface RuntimeState {
   onEditRequest: StartAROpts['onEditRequest'] | null;
   debugFloor: THREE.Group | null;
   debugHud: THREE.Mesh | null;
+  dispenser: THREE.Mesh | null;
 }
 
 let active: RuntimeState | null = null;
@@ -77,7 +76,6 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       session: null,
       refSpace: null,
       anchors: [],
-      pendingPlacement: null,
       drag: null,
       pendingFinalize: null,
       editingUuid: null,
@@ -88,6 +86,7 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       onEditRequest: opts.onEditRequest ?? null,
       debugFloor: null,
       debugHud: null,
+      dispenser: null,
     };
   } else {
     active.onStatus = onStatus;
@@ -138,6 +137,10 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
   console.log(`persistent anchors: ${state.persistentSupported ? 'supported' : 'unsupported'}`);
   console.log(`restored anchors: ${state.anchors.length}`);
 
+  const dispenser = createDispenser();
+  scene.add(dispenser);
+  state.dispenser = dispenser;
+
   const controllerHandles = setupControllers(
     scene,
     renderer,
@@ -168,8 +171,12 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       hudUd.texture?.dispose();
       state.debugHud = null;
     }
+    if (state.dispenser) {
+      scene.remove(state.dispenser);
+      disposeDispenser(state.dispenser);
+      state.dispenser = null;
+    }
     uninstallConsoleCapture();
-    state.pendingPlacement = null;
     state.drag = null;
     state.pendingFinalize = null;
     state.prevDeleteCombo = false;
@@ -184,10 +191,10 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
       updateAnchorPoses(frame, state.refSpace, state.anchors);
       updateDrag(state);
       billboardNotes(state);
-      maybePlace(state, frame);
       maybeFinalizeDrag(state, frame);
       maybeDelete(state, controllerHandles.controllers);
       if (state.debugHud) updateHud(state.debugHud, renderer.xr.getCamera());
+      if (state.dispenser) updateDispenser(state.dispenser, renderer.xr.getCamera());
     }
     renderer.render(scene, camera);
   });
@@ -197,40 +204,72 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
 }
 
 function handlePinch(state: RuntimeState, controller: THREE.XRTargetRaySpace): void {
-  // Raycast against note groups (recursive so we hit body / handles).
   const noteRoots = state.anchors.map((e) => e.mesh);
-  const hit = raycastFromController(controller, noteRoots, true);
+  const targets: THREE.Object3D[] = state.dispenser ? [...noteRoots, state.dispenser] : noteRoots;
+  const hit = raycastFromController(controller, targets, true);
 
-  if (hit) {
-    const role = (hit.object.userData as { role?: string }).role;
-    if (role === 'delete-handle') {
-      const entry = findOwningEntry(state, hit.object);
-      if (entry) {
-        console.log(`delete handle pinched: ${entry.uuid.slice(0, 8)}`);
-        deleteEntry(state, entry);
-      }
-      return;
-    }
-    if (role === 'move-handle') {
-      const entry = findOwningEntry(state, hit.object);
-      if (entry) startDrag(state, entry, controller);
-      return;
-    }
-    if (role === 'body') {
-      const entry = findOwningEntry(state, hit.object);
-      if (entry) void requestEdit(state, entry);
-      return;
-    }
+  if (!hit) {
+    // Empty-space pinch is intentionally a no-op now — use the dispenser to create.
+    return;
   }
 
-  // No relevant hit — queue a new note placement at the controller position.
+  const role = (hit.object.userData as { role?: string }).role;
+
+  if (role === 'dispenser') {
+    startNewNoteFromDispenser(state, controller);
+    return;
+  }
+  if (role === 'delete-handle') {
+    const entry = findOwningEntry(state, hit.object);
+    if (entry) {
+      console.log(`delete handle pinched: ${entry.uuid.slice(0, 8) || '(new)'}`);
+      deleteEntry(state, entry);
+    }
+    return;
+  }
+  if (role === 'move-handle') {
+    const entry = findOwningEntry(state, hit.object);
+    if (entry) startDrag(state, entry, controller);
+    return;
+  }
+  if (role === 'body') {
+    const entry = findOwningEntry(state, hit.object);
+    if (entry) void requestEdit(state, entry);
+    return;
+  }
+}
+
+function startNewNoteFromDispenser(state: RuntimeState, controller: THREE.XRTargetRaySpace): void {
+  if (state.anchors.length >= MAX_NOTES) {
+    state.onStatus('limit');
+    console.warn('cannot create: 8-note limit reached');
+    return;
+  }
+
   const pos = new THREE.Vector3();
   controller.getWorldPosition(pos);
+  // Offset slightly forward so the new note appears in front of the pinching hand.
   const forward = new THREE.Vector3(0, 0, -0.1).applyMatrix4(
     new THREE.Matrix4().extractRotation(controller.matrixWorld)
   );
   pos.add(forward);
-  state.pendingPlacement = { position: pos };
+
+  const mesh = createNoteMesh('');
+  mesh.position.copy(pos);
+  state.rig.scene.add(mesh);
+
+  const entry: AnchoredEntry = {
+    uuid: '',
+    anchor: null,
+    mesh,
+    recreating: true,
+  };
+  state.anchors.push(entry);
+
+  const inv = new THREE.Matrix4().copy(controller.matrixWorld).invert();
+  const local = pos.clone().applyMatrix4(inv);
+  state.drag = { entry, controller, controllerLocalOffset: local };
+  console.log('new note from dispenser');
 }
 
 async function requestEdit(state: RuntimeState, entry: AnchoredEntry): Promise<void> {
@@ -240,6 +279,10 @@ async function requestEdit(state: RuntimeState, entry: AnchoredEntry): Promise<v
   }
   if (state.editingUuid) {
     console.log('edit already in progress');
+    return;
+  }
+  if (entry.recreating || !entry.uuid) {
+    console.log('cannot edit: note still being placed');
     return;
   }
   state.editingUuid = entry.uuid;
@@ -272,7 +315,7 @@ function handleSelectEnd(state: RuntimeState, controller: THREE.XRTargetRaySpace
   state.drag = null;
   entry.recreating = true;
   state.pendingFinalize = { entry, matrix };
-  console.log(`drag end: ${entry.uuid.slice(0, 8)}`);
+  console.log(`drag end: ${entry.uuid.slice(0, 8) || '(new)'}`);
 }
 
 function startDrag(
@@ -280,6 +323,7 @@ function startDrag(
   entry: AnchoredEntry,
   controller: THREE.XRTargetRaySpace
 ): void {
+  if (entry.recreating) return;
   const inv = new THREE.Matrix4().copy(controller.matrixWorld).invert();
   const local = entry.mesh.position.clone().applyMatrix4(inv);
   state.drag = { entry, controller, controllerLocalOffset: local };
@@ -317,18 +361,31 @@ async function recreateAnchor(
   const result = await createPersistentAnchor(frame, state.refSpace, matrix);
   if (!result) {
     entry.recreating = false;
-    state.onStatus('error', 'Failed to recreate anchor after move');
+    state.onStatus('error', 'Failed to anchor note');
+    if (!oldUuid) {
+      // Brand-new note that failed to anchor — drop the orphan mesh.
+      state.rig.scene.remove(entry.mesh);
+      disposeNoteGroup(entry.mesh);
+      state.anchors = state.anchors.filter((e) => e !== entry);
+      console.warn('new note dropped: anchor creation failed');
+    }
     return;
   }
 
-  await deletePersistentAnchor(state.session, oldUuid);
-  removeStored(oldUuid);
+  if (oldUuid) {
+    await deletePersistentAnchor(state.session, oldUuid);
+    removeStored(oldUuid);
+  }
 
   entry.uuid = result.uuid;
   entry.anchor = result.anchor;
   upsert({ uuid: result.uuid, text });
   entry.recreating = false;
-  console.log(`anchor recreated: ${oldUuid.slice(0, 8)} → ${result.uuid.slice(0, 8)}`);
+  if (oldUuid) {
+    console.log(`anchor recreated: ${oldUuid.slice(0, 8)} → ${result.uuid.slice(0, 8)}`);
+  } else {
+    console.log(`note anchored: ${result.uuid.slice(0, 8)}`);
+  }
 }
 
 function findOwningEntry(state: RuntimeState, hitObj: THREE.Object3D): AnchoredEntry | undefined {
@@ -342,12 +399,18 @@ function findOwningEntry(state: RuntimeState, hitObj: THREE.Object3D): AnchoredE
 }
 
 function deleteEntry(state: RuntimeState, entry: AnchoredEntry): void {
+  if (entry.recreating) {
+    console.log('cannot delete: note still being placed');
+    return;
+  }
   state.rig.scene.remove(entry.mesh);
   disposeNoteGroup(entry.mesh);
   state.anchors = state.anchors.filter((e) => e !== entry);
-  removeStored(entry.uuid);
-  if (state.session) {
-    void deletePersistentAnchor(state.session, entry.uuid);
+  if (entry.uuid) {
+    removeStored(entry.uuid);
+    if (state.session) {
+      void deletePersistentAnchor(state.session, entry.uuid);
+    }
   }
 }
 
@@ -383,49 +446,6 @@ function billboardNotes(state: RuntimeState): void {
     if (!entry.mesh.visible) continue;
     billboardYAxis(entry.mesh, _cameraWorld);
   }
-}
-
-function maybePlace(state: RuntimeState, frame: XRFrame): void {
-  if (!state.pendingPlacement) return;
-  const { position } = state.pendingPlacement;
-  state.pendingPlacement = null;
-
-  if (state.anchors.length >= MAX_NOTES) {
-    state.onStatus('limit');
-    return;
-  }
-
-  const camPos = new THREE.Vector3();
-  state.rig.camera.getWorldPosition(camPos);
-  const lookTarget = new THREE.Vector3(camPos.x, position.y, camPos.z);
-  const orienter = new THREE.Object3D();
-  orienter.position.copy(position);
-  orienter.lookAt(lookTarget);
-  const placementMatrix = new THREE.Matrix4().compose(
-    position,
-    orienter.quaternion,
-    new THREE.Vector3(1, 1, 1)
-  );
-
-  const noteText = '';
-  const mesh = createNoteMesh(noteText);
-  mesh.position.copy(position);
-  state.rig.scene.add(mesh);
-
-  if (!state.persistentSupported || !state.session || !state.refSpace) {
-    return;
-  }
-
-  createPersistentAnchor(frame, state.refSpace, placementMatrix).then((result) => {
-    if (!result) {
-      state.rig.scene.remove(mesh);
-      disposeNoteGroup(mesh);
-      state.onStatus('error', 'Failed to create persistent anchor');
-      return;
-    }
-    state.anchors.push({ uuid: result.uuid, anchor: result.anchor, mesh });
-    upsert({ uuid: result.uuid, text: noteText });
-  });
 }
 
 function maybeDelete(state: RuntimeState, controllers: THREE.Object3D[]): void {

@@ -141,8 +141,8 @@ export default function App() {
 
         <ul className="ar-hint ar-hint--list">
           <li>
-            <strong>Create</strong>: pinch in empty space to spawn an empty sticky note at your
-            hand.
+            <strong>Create</strong>: pinch and drag the green &ldquo;+ drag to add&rdquo; dispenser
+            in the lower-left of your view. A new sticky note follows your hand until you release.
           </li>
           <li>
             <strong>Edit</strong>: pinch the card body → a textarea opens on top of the AR view with
