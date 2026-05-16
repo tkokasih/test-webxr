@@ -38,6 +38,7 @@ function statusMessage(status: ARStatus, detail?: string): string {
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<ARHandle | null>(null);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [status, setStatus] = useState<ARStatus>('idle');
@@ -65,6 +66,7 @@ export default function App() {
     try {
       const handle = await startAR(containerRef.current, {
         initialText: activeText,
+        overlayRoot: overlayRef.current ?? undefined,
         onStatus: (s, d) => {
           setStatus(s);
           setStatusDetail(d);
@@ -132,12 +134,13 @@ export default function App() {
           surface and billboarded toward you. Grip + B deletes. Notes survive page reload.
         </p>
         <p className="ar-hint">
-          Debug aids: a quadrant-colored floor marks the local-floor origin (white sphere) with
-          axis lines (red +X, green +Y, blue +Z). A head-locked console panel in the lower-right
-          captures <code>console.log/warn/error</code>.
+          Debug aids: a quadrant-colored floor marks the local-floor origin (white sphere) with axis
+          lines (red +X, green +Y, blue +Z). A head-locked console panel in the lower-right captures{' '}
+          <code>console.log/warn/error</code>.
         </p>
       </main>
       <div ref={containerRef} className="ar-canvas-container" aria-hidden="true" />
+      <div ref={overlayRef} id="xr-overlay" className="xr-overlay" aria-hidden="true" />
     </>
   );
 }

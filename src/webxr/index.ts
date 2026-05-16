@@ -94,7 +94,7 @@ export async function startAR(container: HTMLElement, opts: StartAROpts = {}): P
 
   let session: XRSession;
   try {
-    session = await requestImmersiveAR();
+    session = await requestImmersiveAR(opts.overlayRoot);
   } catch (err) {
     onStatus('error', err instanceof Error ? err.message : String(err));
     throw err;

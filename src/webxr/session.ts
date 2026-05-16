@@ -7,11 +7,22 @@ export async function isARSupported(): Promise<boolean> {
   }
 }
 
-export async function requestImmersiveAR(): Promise<XRSession> {
+export async function requestImmersiveAR(overlayRoot?: HTMLElement): Promise<XRSession> {
   if (!navigator.xr) throw new Error('WebXR not available');
-  return navigator.xr.requestSession('immersive-ar', {
-    optionalFeatures: ['local-floor', 'hit-test', 'anchors', 'plane-detection'],
-  });
+  const init: XRSessionInit = {
+    optionalFeatures: [
+      'local-floor',
+      'hit-test',
+      'anchors',
+      'plane-detection',
+      'hand-tracking',
+      'dom-overlay',
+    ],
+  };
+  if (overlayRoot) {
+    init.domOverlay = { root: overlayRoot };
+  }
+  return navigator.xr.requestSession('immersive-ar', init);
 }
 
 export async function getViewerHitTestSource(session: XRSession): Promise<XRHitTestSource | null> {
