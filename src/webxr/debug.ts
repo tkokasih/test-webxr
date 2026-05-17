@@ -247,7 +247,7 @@ const HUD_OFFSET = new THREE.Matrix4().compose(
 );
 
 const DISPENSER_OFFSET = new THREE.Matrix4().compose(
-  new THREE.Vector3(-0.22, -0.18, -0.55),
+  new THREE.Vector3(0.22, -0.32, -0.55),
   new THREE.Quaternion(),
   new THREE.Vector3(1, 1, 1)
 );
@@ -269,10 +269,10 @@ export function updateDispenser(disp: THREE.Object3D, camera: THREE.Camera): voi
 
 // --- Dispenser sticky note (head-locked "drag to create" affordance) ---
 
-const DISP_CANVAS_W = 384;
-const DISP_CANVAS_H = 192;
-const DISP_PLANE_W = 0.24;
-const DISP_PLANE_H = 0.12;
+const DISP_CANVAS_W = 320;
+const DISP_CANVAS_H = 160;
+const DISP_PLANE_W = 0.14;
+const DISP_PLANE_H = 0.07;
 
 interface DispenserUserData {
   role: 'dispenser';
@@ -319,24 +319,29 @@ function drawDispenserCanvas(canvas: HTMLCanvasElement): void {
   const H = canvas.height;
   ctx.clearRect(0, 0, W, H);
 
-  ctx.fillStyle = 'rgba(34, 197, 94, 0.85)';
+  ctx.fillStyle = 'rgba(34, 197, 94, 0.9)';
   ctx.beginPath();
-  ctx.roundRect(0, 0, W, H, 20);
+  ctx.roundRect(0, 0, W, H, 16);
   ctx.fill();
 
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.roundRect(2, 2, W - 4, H - 4, 18);
+  ctx.roundRect(2, 2, W - 4, H - 4, 14);
   ctx.stroke();
 
   ctx.fillStyle = '#ffffff';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  ctx.font = 'bold 40px system-ui, -apple-system, "Segoe UI", sans-serif';
-  ctx.fillText('+', W / 2, H / 2 - 24);
+  ctx.font = 'bold 56px system-ui, -apple-system, "Segoe UI", sans-serif';
+  ctx.fillText('+', W / 2 - 38, H / 2 + 2);
 
-  ctx.font = '22px system-ui, -apple-system, "Segoe UI", sans-serif';
-  ctx.fillText('drag to add', W / 2, H / 2 + 28);
+  ctx.font = 'bold 24px system-ui, -apple-system, "Segoe UI", sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('new note', W / 2 - 12, H / 2 - 10);
+
+  ctx.font = '16px system-ui, -apple-system, "Segoe UI", sans-serif';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+  ctx.fillText('pinch & drag', W / 2 - 12, H / 2 + 14);
 }

@@ -65,12 +65,14 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (editingNote && textareaRef.current) {
-      textareaRef.current.focus();
-      textareaRef.current.select();
-    }
-  }, [editingNote]);
+  function focusTextarea() {
+    // Quest Browser only opens the system keyboard when focus() runs inside a
+    // synchronous user-gesture handler (this onClick). Calling it from a
+    // post-render useEffect is *not* treated as a gesture, so we wait for the
+    // user to pinch/tap the textarea (or the explicit button) first.
+    textareaRef.current?.focus();
+    textareaRef.current?.select();
+  }
 
   function handleEditRequest(_uuid: string, currentText: string): Promise<string | null> {
     return new Promise((resolve) => {
@@ -175,18 +177,30 @@ export default function App() {
             <label className="xr-edit-label" htmlFor="xr-edit-textarea">
               Edit note text
             </label>
+            <p className="xr-edit-hint">
+              Tap the box below (or the &ldquo;Open keyboard&rdquo; button) to bring up the Quest
+              system keyboard.
+            </p>
             <textarea
               ref={textareaRef}
               id="xr-edit-textarea"
               className="xr-edit-textarea"
               value={editDraft}
               onChange={(e) => setEditDraft(e.target.value)}
+              onClick={focusTextarea}
               rows={4}
-              placeholder="Type here…"
+              placeholder="Pinch here to type…"
             />
             <div className="xr-edit-actions">
               <button type="button" className="xr-edit-btn xr-edit-btn--ghost" onClick={cancelEdit}>
                 Cancel
+              </button>
+              <button
+                type="button"
+                className="xr-edit-btn xr-edit-btn--ghost"
+                onClick={focusTextarea}
+              >
+                Open keyboard
               </button>
               <button
                 type="button"
